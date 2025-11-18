@@ -5,88 +5,6 @@
 
 
 ;;; ----------------------------------------------------------------------
-;;; Temp utility functions from other packages
-
-
-(defun valid-date-p (year month day)
-  "T if date describes an actual day in spacetime."
-  (when (ignore-errors (encode-universal-time 1 0 0 day month year)) t))
-
-(defun identify-month (string)
-  "Identify textual month of the year in hungarian or english."
-  (when (stringp string)
-    (let* ((mon '(("jan" "january" "januar" "január")
-                  ("feb" "february" "februar" "február")
-                  ("mar" "már" "march" "marcius" "március")
-                  ("apr" "ápr" "april" "aprilis" "április")
-                  ("maj" "máj" "may" "majus" "május")
-                  ("jun" "jún" "june" "junius" "június")
-                  ("jul" "júl" "july" "julius" "július")
-                  ("aug" "august" "augusztus")
-                  ("sep" "szep" "szept" "september" "szeptember")
-                  ("okt" "oct" "october" "oktober" "október")
-                  ("nov" "november")
-                  ("dec" "december")))
-           (pos (position-if
-                 #'(lambda (sublist)
-                     (member string sublist :test #'astring-equal))
-                 mon)))
-      (when pos (1+ pos)))))
-
-(defun parse-hudate (string)
-  "Convert hungarian short textual date into a list (year month day)."
-  (when (stringp string)
-    (multiple-value-bind (full vector)
-        (cl-ppcre:scan-to-strings
-         "^[^0-9]*(\\d{2,4})[^\\p{L}0-9]*(\\d{1,2}|[\\p{L}\\p{M}]+)[^a-zA-z\\d:]+(\\d{1,2}).*$" string)
-      (declare (ignore full))
-      (when vector
-        (destructuring-bind (year month day)
-            (coerce vector 'list)
-          (let* ((year-raw (parse-integer year))
-                 (year-ok  (if (< year-raw 100)
-                             (+ 2000 year-raw)
-                             year-raw))
-                 (month-ok (or (parse-integer month :junk-allowed t)
-                               (identify-month month)))
-                 (day-ok   (parse-integer day)))
-            (when (and (<= 1900 year-ok 9999)
-                       (<= 1 month-ok 12)
-                       (<= 1 day-ok 31))
-              (list year-ok month-ok day-ok))))))))
-
-
-;;; ----------------------------------------------------------------------
-;;; Temp type definitions
-
-
-(deftype value-list ()
-  `(and list (not null) (satisfies ,#'(lambda (list) (eq (first list) :vals)))))
-
-(deftype enclosed-value-list ()
-  `(and list (not null) (satisfies ,#'(lambda (list) (eq (first list) :@vals)))))
-
-(deftype empty-cell ()
-  `(or (and string (satisfies ,#'(lambda (str) (string= str ""))))
-       (and symbol (member empty :empty))
-       null))
-
-(defun well-formed-hudate-p (list)
-  (and (every #'integerp list)
-       (>= (first list) 1900)
-       (apply #'valid-date-p list)))
-  
-(deftype hudate ()
-  `(and list (not null) (satisfies well-formed-hudate-p)))
-
-(defun hudate-parsable-p (str)
-  (typep (parse-hudate str) 'hudate))
-
-(deftype hudate-parsable ()
-  `(and string (satisfies hudate-parsable-p)))
-                             
-
-;;; ----------------------------------------------------------------------
 ;;; Synonyms mechanisms
 
 
@@ -151,12 +69,6 @@
        ,result)))
 
 
-#|(defun rewriter-log (label value result)
-  "Helper fn to DEFREW."
-  (when *rewriters-logging-active*
-    (format *rewriters-log*
-            "Function '~a' applied on value ~a returned ~a.~%"
-            label value result)))|#
 (defun logger (ctrl-string &rest args)
   "Write a message to *REWRITERS-LOG*."
   (when *rewriters-logging-active*
@@ -205,7 +117,6 @@
                    ;; If rewriter is still applicable, keep it as a candidate
                    (when applicable
                      (push (list (/ points out-of) fn) results)))))
-;                   (push (list applicable points out-of applicable fn) results))));)
              (if (= (length results) 1)
                ;; If there is only one candidate, it is the winner
                (setf winner (cadar results))
@@ -218,7 +129,6 @@
                                                 results :key #'first)))))
              ;; Call winner
              (funcall winner value))))
-;             results)))
     ;; Run body, ignoring errors when prescribed
     (if ignore-errors
       (ignore-errors (body))
