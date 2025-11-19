@@ -4,7 +4,11 @@
 (in-package #:cl-user)
 
 
-(defpackage #:rewrite
+(defpackage #:transl
   (:use #:cl #:str #:achar)
-  (:export #:*rewriters*
-           #:rewrite))
+  (:export #:synonymp
+           #:canoninc
+           #:defrew
+           #:with-transl
+           #:transl
+           ))
