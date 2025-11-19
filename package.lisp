@@ -7,8 +7,7 @@
 (defpackage #:transl
   (:use #:cl #:str #:achar)
   (:export #:synonymp
-           #:canoninc
-           #:defrew
+           #:canonincal
+           #:deftranslators
            #:with-transl
-           #:transl
-           ))
+           #:transl))

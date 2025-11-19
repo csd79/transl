@@ -11,6 +11,7 @@
 (defparameter *translators* nil)
 (defparameter *transl-log* nil)
 (defparameter *transl-logging-on* nil)
+(defparameter *synonyms* nil)
 
 
 (defun tlog (ctrl-string &rest args)
@@ -19,24 +20,41 @@
     (apply #'format *transl-log* ctrl-string args)))
 
 
-;; Translators example
-;.....
+#|;; TRANSLATORS EXAMPLE:
+ 
+(deftranslators *x*
+  (:src  "a"      ; selector: symbolic data source
+   :dst  "b"      ; selector: symbolic target
+   :type integer  ; selector: type specifier
+   :pred integerp ; selector: single arg predicate (fn name or simplified definition)
+   :fn   (v "1")) ; translator fn (fn name or simplified definition) 
+  (:src  "a"
+   :dst  "b"
+   :type integer
+   :fn   (v "2")))
+
+;; Simplified definition: (<arg-name> <body-expr1> ... <body-exprn>)
+;; Currently only single value functions are supported.
+;; If multiple translator shares the highest score, the one last defined wins.
+;; Translators are supposed to be ordered from least specific selectors to most specific.
+|#
 
 
-;; Synonyms example
-#|(defparameter *syns-1*
+#|;; SYNONYMS EXAMPLE:
+
+(defparameter *syns-1*
   '(("Bajai Tankerületi Központ" "Bajai TK" "Bajai" "Baja")
     ("Balassagyarmati Tankerületi Központ" "Balassagyarmati TK"
      "Balassagyarmati" "Balassagyarmat")
     ("Balatonfüredi Tankerületi Központ" "Balatonfüredi TK" "Balatonfüredi"
-     "Balatonfüred")))|#
+     "Balatonfüred")))
+
+;; First form of each line is considered canonical.
+|#
 
 
 ;;; ----------------------------------------------------------------------
 ;;; Synonyms mechanisms
-
-
-(defparameter *synonyms* nil)
 
 
 (defun synonymp (str1 str2 &key (test #'astring=))
@@ -51,7 +69,7 @@
     (when result t)))
 
 
-(defun canonic (string &key (test #'achar=) (canonical #'first))
+(defun canonical (string &key (test #'achar=) (canonical #'first))
   "Return canonical form of the synonym STRING."
   (let* ((row (find-if #'(lambda (syn-row)
                            (some #'(lambda (elem)
@@ -67,21 +85,14 @@
 
                      
 ;;; ----------------------------------------------------------------------
-;;; Rewriter mechanisms
+;;; Translator mechanisms
 
 
-#|(defmacro defrew ((label value) &body body)
-  ""
-  (let ((result (gensym)))
-    `(compile nil (lambda (,value)
-                    (let ((,result ,@body))
-                      (tlog "~&Function '~a' applied on value ~a returned ~a.~%"
-                              ,label ,value ,result)
-                      ,result)))))|#
-
+;; Helper functions for DEFTRANSLATORS.
+;(eval-when (:execute :load-toplevel :compile-toplevel)
 (eval-when (:compile-toplevel)
   (defun expand-fn (expr &key (src "") (dst "") (log nil))
-    "Generate function definitions for :PRED and :FN in DEFTRANSLATORS rows."
+    "Generate function definitions for :PRED and :FN."
     (let ((result (gensym)))
       (cond
        ;; If EXPR is a symbol, treat it as a function name.
@@ -114,11 +125,7 @@
                 (drop-null dst :dst dst)
                 (drop-null type :type `',type)
                 (drop-null pred :pred (expand-fn pred :log nil))
-                (drop-null fn :fn (expand-fn fn :src src :dst dst :log t))))))
-#|      (list 'list :src src :dst dst :type type
-            :pred (expand-fn pred)
-            :fn   (expand-fn fn :src src :dst dst :log t))))|#
-  )
+                (drop-null fn :fn (expand-fn fn :src src :dst dst :log t)))))))
 
 
 (defmacro deftranslators (var &body translators)
@@ -162,41 +169,6 @@
           (setf applicable nil))))
 
 
-#|(defun transl (value label &key (ignore-errors t))
-  "Translate VALUE calling the translator fn with the highest selector score."
-  (flet ((body ()
-           (multiple-value-bind (src dst)
-               (destruct-label label)
-             (let ((results '()) (max 0) (winner nil))
-               ;; Score & collect applicable rewriters
-               (dolist (rewriter *translators*)
-                 (destructuring-bind (&key source dest type pred fn)
-                     rewriter
-                   (let ((points 0) (out-of 0) (applicable t))
-                     ;; Calculate score based in each selector
-                     (scoring source 4 (equal src source))
-                     (scoring dest   8 (equal dst dest))
-                     (scoring type   1 (typep value type))
-                     (scoring pred   2 (funcall pred value))
-                     ;; If rewriter is still applicable, keep it as a candidate
-                     (when applicable
-                       (push (list (/ points out-of) fn) results)))))
-               (if (= (length results) 1)
-                 ;; If there is only one candidate, it is the winner
-                 (setf winner (cadar results))
-                 ;; Otherwise, determine highest score
-                 (progn
-                   (loop for (s nil) in results doing
-                         (when (> s max) (setf max s)))
-                   ;; The last rewriter with the highest score is the winner
-                   (setf winner (cadar (remove-if #'(lambda (n) (/= n max))
-                                                  results :key #'first)))))
-               ;; Call winner
-               (funcall winner value)))))
-    ;; Run body, ignoring errors when prescribed
-    (if ignore-errors
-      (ignore-errors (body))
-      (body))))|#
 (defun transl (value label &key (ignore-errors t))
   "Translate VALUE calling the translator fn with the highest selector score."
   (flet ((body ()
@@ -237,69 +209,6 @@
 
 ;;; ----------------------------------------------------------------------
 ;;; Sandbox
-
-
-#|(defparameter *transl-example*
-  `(
-#|    (
-     :source "excel"
-     :dest   "sql"
-     :type   integer
-     :pred   #'evenp
-     :fn     ,(defrew ("label-temp" v) (identity v))
-     )|#
-
-    (:source "a"
-     :dest   "b"
-     :fn     ,(defrew ("a->b" v) "1"))
-
-    (:source "a"
-     :dest   "b"
-     :type   integer
-     :fn     ,(defrew ("a->b int" v) "2"))
-
-    (:source "a"
-     :dest   "b"
-     :pred   ,#'(lambda (val) (and (numberp val) (evenp val)))
-     :fn     ,(defrew ("a->b pred:evenp" v) "3"))
-
-    (:source "a"
-     :dest   "b"
-     :type   integer
-     :pred   ,#'(lambda (val) (and (numberp val) (oddp val)))
-     :fn     ,(defrew ("a->b" v) "4"))
-
-    (:source "c"
-     :dest   "d"
-     :fn     ,(defrew ("c->d" v) "5"))
-
-    (:source "c"
-     :dest   "d"
-     :type   string
-     :fn     ,(defrew ("c->d string" v) "6"))
-
-    (:source "c"
-     :dest   "d"
-     :pred   ,#'(lambda (str) (and (stringp str) (string= str "heh")))
-     :fn     ,(defrew ("c->d pred heh" v) "7"))
-
-    (:source "c"
-     :dest   "d"
-     :type   string
-     :pred   ,#'(lambda (str) (and (stringp str) (string= str "heh")))
-     :fn     ,(defrew ("c->d string" v) "8"))
-
-    (:source "a"
-     :dest   "d"
-     :type   integer
-     :fn     ,(defrew ("a->d int" v) "9"))
-
-    (:source "c"
-     :dest   "b"
-     :pred   ,#'(lambda (str) (and (stringp str) (string= str "heh")))
-     :fn     ,(defrew ("c->b heh" v) "10"))
-
-    ))|#
 
 
 (deftranslators *x*
@@ -363,11 +272,10 @@
     ("Belsõ-Pesti Tankerületi Központ" "Belsõ-Pesti TK" "Belsõ-Pesti" "Belsõ-Pest")))
 
 
-(defun rwtest ()
-;  (with-transl (*rew-test* :synonyms *tk-syns* :verify t)
+(defun test ()
   (with-transl (*x* :synonyms *tk-syns* :verify t)
     (synonymp "Baja" "Bajai TK")
     (synonymp "Baja" "Bójai TK")
-    (canonic "Baja")
-    (canonic "Bója")
+    (canonical "Baja")
+    (canonical "Bója")
     (transl 124 "a>b")))
