@@ -14,83 +14,90 @@
 (defparameter *synonyms* nil)
 
 
+(defun timestamp (unitime)
+  (multiple-value-bind (sec min hour date mon year day daylight-p zone)
+      (decode-universal-time unitime)
+    (declare (ignore daylight-p zone))
+    (let ((days '("Mon" "Tue" "Wed" "Thu" "Fri" "Sat" "Sun")))
+      (format nil "~4,'0d.~2,'0d.~2,'0d. ~a, ~2,'0d:~2,'0d:~2,'0d"
+              year mon date
+              (nth (1- day) days)
+              hour min sec))))
+
+
 (defun tlog (ctrl-string &rest args)
   "Write a message to *TRANSL-LOG*."
   (when *transl-logging-on*
-    (apply #'format *transl-log* ctrl-string args)))
+    (format *transl-log*
+            (concatenate 'string "~&[TRANSL] "
+                         (timestamp (get-universal-time))
+                         "  :  "
+                         (apply #'format nil ctrl-string args)))))
 
 
-#|;; TRANSLATORS EXAMPLE:
- 
-(deftranslators *x*
-  (:src  "a"      ; selector: symbolic data source
-   :dst  "b"      ; selector: symbolic target
-   :type integer  ; selector: type specifier
-   :pred integerp ; selector: single arg predicate (fn name or simplified definition)
-   :fn   (v "1")) ; translator fn (fn name or simplified definition) 
-  (:src  "a"
-   :dst  "b"
-   :type integer
-   :fn   (v "2")))
-
-;; Simplified definition: (<arg-name> <body-expr1> ... <body-exprn>)
-;; Currently only single value functions are supported.
-;; If multiple translator shares the highest score, the one last defined wins.
-;; Translators are supposed to be ordered from least specific selectors to most specific.
-|#
-
-
-#|;; SYNONYMS EXAMPLE:
-
-(defparameter *syns-1*
-  '(("Bajai Tankerületi Központ" "Bajai TK" "Bajai" "Baja")
-    ("Balassagyarmati Tankerületi Központ" "Balassagyarmati TK"
-     "Balassagyarmati" "Balassagyarmat")
-    ("Balatonfüredi Tankerületi Központ" "Balatonfüredi TK" "Balatonfüredi"
-     "Balatonfüred")))
-
-;; First form of each line is considered canonical.
-|#
+(defun load-definitions (file)
+  "Load definitions from external source file."
+  (flet ((load-definition (handle)
+           (eval (eval (read handle nil nil)))))   ; The first EVAL only returns the name of the new variable.
+    (destructuring-bind (translators synonyms)
+        (with-open-file (f file :direction :input :external-format :default)
+          (list (load-definition f)
+                (load-definition f)))
+      (values translators synonyms))))
 
 
 ;;; ----------------------------------------------------------------------
 ;;; Synonyms mechanisms
 
 
-(defun synonymp (str1 str2 &key (test #'astring=))
+(defun filter-rows (rows val test)
+  "Select all the rows that contain VAL."
+  (remove-if-not #'(lambda (row)
+                     (member val row :test test))
+                 rows))
+
+
+(defun synonymp (val1 val2 &key (test #'astring=))
   "Compare 2 strings using the current synonyms dictionary."
-  (let* ((candidates (apply #'append (remove-if-not
-                                      #'(lambda (row)
-                                          (member str1 row :test test))
-                                      *synonyms*)))
-         (result     (member str2 candidates :test test)))
-    (tlog "~&'~a' and '~a' resolved as ~asynonyms.~%"
-            str1 str2 (if result "" "not "))
-    (when result t)))
+  ;; Worker function.
+  (flet ((find-synonym ()
+           (when *synonyms*
+             (let ((candidates (apply #'append (filter-rows *synonyms* val1 test))))
+               (member val2 candidates :test test)))))
+    (let ((result (find-synonym)))
+      ;; Construct log.
+      (tlog "'~a' and '~a' resolved as ~asynonyms.~a~%"
+            val1 val2
+            (if result "" "not ")
+            (if *synonyms* "" " (Synonyms are not defined.)"))
+      ;; Return result.
+      (when result t))))
 
 
-(defun canonical (string &key (test #'achar=) (canonical #'first))
+(defun canonical (val &key (test #'astring=) (canonical #'first))
   "Return canonical form of the synonym STRING."
-  (let* ((row (find-if #'(lambda (syn-row)
-                           (some #'(lambda (elem)
-                                     (search string elem :test test))
-                                 syn-row))
-                       *synonyms* :from-end t))
-         (result (when row (funcall canonical row))))
-    (tlog "~&The canonical form of synonym '~a' is ~a.~%" string
+  ;; Worker function.
+  (flet ((find-canonical ()
+           (when *synonyms*
+             (let ((candidates (filter-rows *synonyms* val test)))
+               (funcall canonical (first (last candidates)))))))
+    (let ((result (find-canonical)))
+      ;; Construct log.
+      (tlog "The canonical form of synonym '~a' is ~a.~a~%" val
             (if result
               (format nil "resolved as '~a'" result)
-              "unknown"))
-    result))
+              "unknown")
+            (if *synonyms* "" " (Synonyms are not defined.)"))
+      ;; Return canonical, or if it is undefined, the original value.
+      (or result val))))
 
-                     
+
 ;;; ----------------------------------------------------------------------
 ;;; Translator mechanisms
 
 
 ;; Helper functions for DEFTRANSLATORS.
-;(eval-when (:execute :load-toplevel :compile-toplevel)
-(eval-when (:compile-toplevel)
+(eval-when (:load-toplevel :compile-toplevel)
   (defun expand-fn (expr &key (src "") (dst "") (log nil))
     "Generate function definitions for :PRED and :FN."
     (let ((result (gensym)))
@@ -106,13 +113,14 @@
               ;; Logging is required.
               `(lambda (,var)
                  (let ((,result (progn ,@body)))
-                   (tlog "~&Function '~a' applied on value ~a returned ~a.~%"
-                         (format nil "~a > ~a" ,src ,dst) ,var ,result)
+                   (tlog "Value ~a translated as ~a.   [~a > ~a] ~a~%"
+                         ,var ,result ,src ,dst ',expr)
                    ,result))
               ;; Logging not required.
               `(lambda (,var) ,@body)))))
        ;; If EXPR is something else, signal an error.
        (t (error "~a should be a symbol or a list." expr)))))
+
 
   (defun expand-translator (list)
     "Generate on row of translators description."
@@ -134,15 +142,14 @@
      (list ,@(mapcar #'expand-translator translators))))
 
 
-(defmacro with-transl ((translators &key (synonyms nil) (verify nil)) &body body)
+(defmacro with-transl ((translators &key (synonyms nil) (log-into-stream nil)) &body body)
   "Create context for translation and resolving synonyms."
   (let ((result (gensym)))
-    `(let* ((*transl-logging-on* ,verify)
-            (*transl-log* (when ,verify (make-string-output-stream)))
+    `(let* ((*transl-logging-on* (when ,log-into-stream t))
+            (*transl-log* ,log-into-stream)
             (*translators* ,translators)
             (*synonyms* (or ,synonyms *synonyms*))
             (,result (progn ,@body)))
-       (when ,verify (format t "~%~a" (get-output-stream-string *transl-log*)))
        ,result)))
 
   
@@ -158,124 +165,74 @@
             (t (values nil nil))))))                                          ; No direction
 
 
-(defmacro scoring (selector weight predicatum)
-  "When rewriter is still considered applicable and selector is present,
-   count it in max points. Then if PREDICATUM is true, count it in
-   actual score, otherwise consider the rewriter as not applicable."
-  `(and applicable ,selector
-        (incf out-of ,weight)
-        (if ,predicatum
-          (incf points ,weight)
-          (setf applicable nil))))
+(defun select-translator (value label)
+  "Select the most specific applicable translator."
+  (multiple-value-bind (src dst)
+      (destruct-label label)
+    (let ((results '()))
+      ;; Collecting applicable translators
+      (dolist (translator *translators*)
+        (destructuring-bind (&key ((:src source)) ((:dst dest)) type pred fn)
+            translator
+          (when (and (if source (string= source src) t)
+                     (if dest (string= dest dst) t)
+                     (if type (typep value type) t)
+                     (if pred (funcall pred value) t))
+            (push fn results))))
+      ;; Return the most specific applicable translator
+      ;; (The one defined last in the list)
+      (first results))))
 
 
-(defun transl (value label &key (ignore-errors t))
+(defun transl (value label &key (ignore-selection-errors t) (allow-raw t))
   "Translate VALUE calling the translator fn with the highest selector score."
-  (flet ((body ()
-           (multiple-value-bind (src dst)
-               (destruct-label label)
-             (let ((results '()) (max 0) (winner nil))
-               ;; Score & collect applicable translators.
-               (dolist (translator *translators*)
-                 (destructuring-bind (&key ((:src source)) ((:dst dest)) type pred fn)
-                     translator
-                   (let ((points 0) (out-of 0) (applicable t))
-                     ;; Calculate score based in each selector
-                     (scoring source 4 (equal src source))
-                     (scoring dest   8 (equal dst dest))
-                     (scoring type   1 (typep value type))
-                     (scoring pred   2 (funcall pred value))
-                     ;; If translator is still applicable, keep it as a candidate
-                     (when applicable
-                       (push (list (/ points out-of) fn) results)))))
-               (if (= (length results) 1)
-                 ;; If there is only one candidate, it is the winner
-                 (setf winner (cadar results))
-                 ;; Otherwise, determine highest score
-                 (progn
-                   (loop for (s nil) in results doing
-                         (when (> s max) (setf max s)))
-                   ;; The last translator with the highest score is the winner
-                   (setf winner (cadar (remove-if #'(lambda (n) (/= n max))
-                                                  results :key #'first)))))
-               ;; Call winner
-               (funcall winner value)))))
-    ;; Run body, ignoring errors when prescribed
-    (if ignore-errors
-      (ignore-errors (body))
-      (body))))
-
+  (if *translators*
+    ;; If translators are defined, translate data
+    (let ((translator (if ignore-selection-errors
+                        (ignore-errors (select-translator value label))
+                        (select-translator value label))))
+      ;; Call translator if one was found
+      (if translator
+        (funcall translator value)
+        (if allow-raw
+          ;; Missing translators allowed.
+          (progn
+            (tlog "No translator found for value ~a, returned.~%" value)
+            value)
+          ;; Missing translators not allowed.
+          (error "Translator for ~a (of type ~a) with label ~a not found."
+                 value (type-of value) label))))
+    ;; If translators are not defined, return original value
+    (progn
+      (tlog "Value ~a cannot be translated. (Translators are not defined.)~%" value)
+      value)))
 
 
 ;;; ----------------------------------------------------------------------
-;;; Sandbox
-
-
-(deftranslators *x*
-  (:src  "a"
-   :dst  "b"
-   :fn   (v "1"))
-
-  (:src  "a"
-   :dst  "b"
-   :type integer
-   :fn   (v "2"))
-
-  (:src  "a"
-   :dst  "b"
-   :pred (val (and (numberp val) (evenp val)))
-   :fn   (v "3"))
-
-  (:src  "a"
-   :dst  "b"
-   :type integer
-   :pred (val (and (numberp val) (evenp val)))
-   :fn   (v "4"))
-
-  (:src  "c"
-   :dst  "d"
-   :fn   (v "5"))
-
-  (:src  "c"
-   :dst  "d"
-   :type string
-   :fn   (v "6"))
-
-  (:src  "c"
-   :dst  "d"
-   :pred (str (and (stringp str) (string= str "heh")))
-   :fn   (v "7"))
-
-  (:src  "c"
-   :dst  "d"
-   :type string
-   :pred (str (and (stringp str) (string= str "heh")))
-   :fn   (v "8"))
-
-  (:src  "a"
-   :dst  "d"
-   :type integer
-   :fn   (v "9"))
-
-  (:src  "c"
-   :dst  "b"
-   :pred (str (and (stringp str) (string= str "heh")))
-   :fn   (v "10"))
-)
-
-
-(defparameter *tk-syns*
-  '(("Bajai Tankerületi Központ" "Bajai TK" "Bajai" "Baja")
-    ("Balassagyarmati Tankerületi Központ" "Balassagyarmati TK" "Balassagyarmati" "Balassagyarmat")
-    ("Balatonfüredi Tankerületi Központ" "Balatonfüredi TK" "Balatonfüredi" "Balatonfüred")
-    ("Békéscsabai Tankerületi Központ" "Békéscsabai TK" "Békéscsabai" "Békéscsaba")
-    ("Belsõ-Pesti Tankerületi Központ" "Belsõ-Pesti TK" "Belsõ-Pesti" "Belsõ-Pest")))
+;;; Testing
 
 
 (defun test ()
-  (with-transl (*x* :synonyms *tk-syns* :verify t)
-    (synonymp "Baja" "Bajai TK")
-    (synonymp "Baja" "Bójai TK")
-    (canonical "Baja")
-    (canonical "Bója")
-    (transl 124 "a>b")))
+  (let ((log (make-string-output-stream)))
+    (multiple-value-bind (translators synonyms)
+        (load-definitions "c:\\Users\\cselovszkid\\common-lisp\\transl\\_EXAMPLE_.lisp")
+      (with-transl (translators :synonyms synonyms :log-into-stream log)
+        (synonymp "Baja" "Bajai TK")
+        (synonymp "Baja" "Bójai TK")
+        (canonical "Baja")
+        (canonical "Bója")
+        (transl 124 "a>b" :ignore-errors nil))
+      (get-output-stream-string log))))
+
+
+(defun test2 ()
+  (let ((log (make-string-output-stream)))
+    (multiple-value-bind (translators synonyms)
+        (load-definitions "c:\\Users\\cselovszkid\\common-lisp\\transl\\_EXAMPLE_2.lisp")
+      (with-transl (translators :synonyms synonyms :log-into-stream log)
+        (synonymp "Baja" "Bajai TK")
+        (synonymp "Baja" "Bójai TK")
+        (canonical "Baja")
+        (canonical "Bója")
+        (transl 124 "a>b" :ignore-selection-errors nil))
+      (get-output-stream-string log))))
