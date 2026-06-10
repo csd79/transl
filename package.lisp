@@ -5,7 +5,7 @@
 
 
 (defpackage #:transl
-  (:use #:cl #:str #:achar)
+  (:use #:cl #:str #:achar #:wax)
   (:export #:load-definitions
            #:synonymp
            #:canonincal

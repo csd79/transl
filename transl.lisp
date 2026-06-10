@@ -35,7 +35,7 @@
                          (apply #'format nil ctrl-string args)))))
 
 
-(defun load-definitions (file)
+#|(defun load-definitions% (file)
   "Load definitions from external source file."
   (flet ((load-definition (handle)
            (eval (eval (read handle nil nil)))))   ; The first EVAL only returns the name of the new variable.
@@ -43,7 +43,14 @@
         (with-open-file (f file :direction :input :external-format :default)
           (list (load-definition f)
                 (load-definition f)))
-      (values translators synonyms))))
+      (values translators synonyms))))|#
+
+
+(defun load-definitions (file)
+  "Load definitions from external source file."
+  (apply #'values
+         (mapcar #'eval-definition
+                 (load-forms file :count 2))))
 
 
 ;;; ----------------------------------------------------------------------
@@ -216,19 +223,6 @@
   (let ((log (make-string-output-stream)))
     (multiple-value-bind (translators synonyms)
         (load-definitions "c:\\Users\\cselovszkid\\common-lisp\\transl\\_EXAMPLE_.lisp")
-      (with-transl (translators :synonyms synonyms :log-into-stream log)
-        (synonymp "Baja" "Bajai TK")
-        (synonymp "Baja" "Bójai TK")
-        (canonical "Baja")
-        (canonical "Bója")
-        (transl 124 "a>b" :ignore-errors nil))
-      (get-output-stream-string log))))
-
-
-(defun test2 ()
-  (let ((log (make-string-output-stream)))
-    (multiple-value-bind (translators synonyms)
-        (load-definitions "c:\\Users\\cselovszkid\\common-lisp\\transl\\_EXAMPLE_2.lisp")
       (with-transl (translators :synonyms synonyms :log-into-stream log)
         (synonymp "Baja" "Bajai TK")
         (synonymp "Baja" "Bójai TK")
